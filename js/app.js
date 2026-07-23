@@ -47,7 +47,11 @@ let placementGrid = emptyGrid();
 // tracking boards for battle
 let myShotsGrid = emptyGrid();     // my shots against the opponent (0/miss/hit/sunk)
 let incomingGrid = emptyGrid();    // shots received on my fleet (0/miss/hit/sunk)
+let myShotsOrder = [];             // flat cell indices, in the order I fired them
+let incomingOrder = [];            // flat cell indices, in the order the opponent fired them
 let myFleetState = null;           // ships + hits (copy of my private doc)
+let myLastAnimatedIdx = null;      // last cell index we've already played an impact animation for
+let oppLastAnimatedIdx = null;
 
 function emptyGrid() {
   return Array.from({ length: SIZE }, () => Array(SIZE).fill(0));
@@ -591,6 +595,7 @@ function renderPlacementBoard() {
       board.appendChild(cell);
     }
   }
+  renderShipHulls(board, Object.values(placedShips).map(s => ({ cells: s.cells, sunk: false })));
 }
 
 function buildCoordHeader(board) {
@@ -604,6 +609,72 @@ function buildCoordHeader(board) {
     board.appendChild(h);
   });
 }
+
+// ---------- Ship hull overlays (simplified silhouettes drawn on top of the grid) ----------
+function normCells(cells) {
+  if (!cells || !cells.length) return [];
+  return Array.isArray(cells[0]) ? cells : cellsFromObj(cells);
+}
+
+// ships: [{ cells: [[r,c],...] | [{r,c},...], sunk: bool }]
+// variant: '' (own fleet, afloat) | 'sunk-own' (own fleet, sunk) | 'wreck' (revealed enemy sunk ship)
+function renderShipHulls(board, ships, variant) {
+  ships.forEach(ship => {
+    const cells = normCells(ship.cells);
+    if (!cells.length) return;
+    const rows = cells.map(([r]) => r);
+    const cols = cells.map(([, c]) => c);
+    const r0 = Math.min(...rows), r1 = Math.max(...rows);
+    const c0 = Math.min(...cols), c1 = Math.max(...cols);
+    const orientation = r1 > r0 ? 'vertical' : 'horizontal';
+    const hull = document.createElement('div');
+    hull.className = 'ship-hull ' + orientation + (ship.sunk && variant ? ' ' + variant : '');
+    // grid lines: cell index i sits between lines (i+2) and (i+3), since
+    // column/row 1 is the coordinate label.
+    hull.style.gridRow = `${r0 + 2} / ${r1 + 3}`;
+    hull.style.gridColumn = `${c0 + 2} / ${c1 + 3}`;
+    board.appendChild(hull);
+  });
+}
+
+// Groups contiguous "sunk" cells on a shots grid into separate ships, so we
+// can draw a wreck silhouette for each enemy ship revealed as sunk.
+function findSunkGroups(grid) {
+  const seen = Array.from({ length: SIZE }, () => Array(SIZE).fill(false));
+  const groups = [];
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      if (grid[r][c] !== 'sunk' || seen[r][c]) continue;
+      const stack = [[r, c]];
+      seen[r][c] = true;
+      const cells = [];
+      while (stack.length) {
+        const [cr, cc] = stack.pop();
+        cells.push([cr, cc]);
+        [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr, dc]) => {
+          const nr = cr + dr, nc = cc + dc;
+          if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && !seen[nr][nc] && grid[nr][nc] === 'sunk') {
+            seen[nr][nc] = true;
+            stack.push([nr, nc]);
+          }
+        });
+      }
+      groups.push(cells);
+    }
+  }
+  return groups;
+}
+
+// Builds a Map of flatIndex -> recency rank (0 = most recent) from an
+// order array, so shot cells can fade from bright (fresh) to normal (old).
+function recencyRanks(order) {
+  const ranks = new Map();
+  for (let i = 0; i < order.length; i++) {
+    ranks.set(order[order.length - 1 - i], i);
+  }
+  return ranks;
+}
+const RECENCY_STEPS = 10; // shots older than this look fully "settled"
 
 function previewShip(r, c) {
   if (!selectedShipId || placedShips[selectedShipId]) return;
@@ -652,6 +723,7 @@ $('#btnReady').addEventListener('click', async () => {
   });
   await setDoc(doc(db, 'games', currentGameId, 'shots', uid), {
     grid: gridToFlat(emptyGrid()),
+    order: [],
   }, { merge: true });
 
   $('#btnReady').disabled = true;
@@ -690,6 +762,8 @@ function handlePostPlacementTransition(g) {
 async function enterGame(g) {
   if (unsubGame) unsubGame();
   currentGameData = g;
+  myLastAnimatedIdx = null;
+  oppLastAnimatedIdx = null;
 
   const oppUid = myRole === 'host' ? g.guestUid : g.hostUid;
   const oppName = myRole === 'host' ? g.guestName : g.hostName;
@@ -728,6 +802,7 @@ async function enterGame(g) {
   unsubMyShots = onSnapshot(doc(db, 'games', currentGameId, 'shots', uid), (snap) => {
     const flat = snap.data()?.grid;
     myShotsGrid = flat ? flatToGrid(flat) : emptyGrid();
+    myShotsOrder = snap.data()?.order ?? [];
     renderAttackBoard();
   });
 
@@ -735,6 +810,7 @@ async function enterGame(g) {
   unsubOppShots = onSnapshot(oppShotsRef, (snap) => {
     const flat = snap.data()?.grid;
     incomingGrid = flat ? flatToGrid(flat) : emptyGrid();
+    incomingOrder = snap.data()?.order ?? [];
     renderDefenseBoard();
   });
 }
@@ -757,6 +833,9 @@ function renderAttackBoard() {
   const g = currentGameData;
   const isMyTurn = g && ((myRole === 'host' && g.turn === 'host') || (myRole === 'guest' && g.turn === 'guest'));
   const pending = g?.pendingShot;
+  const ranks = recencyRanks(myShotsOrder);
+  const lastIdx = myShotsOrder.length ? myShotsOrder[myShotsOrder.length - 1] : null;
+  const isNewShot = lastIdx !== null && lastIdx !== myLastAnimatedIdx;
 
   for (let r = 0; r < SIZE; r++) {
     const rowLabel = document.createElement('div');
@@ -765,12 +844,22 @@ function renderAttackBoard() {
     board.appendChild(rowLabel);
     for (let c = 0; c < SIZE; c++) {
       const cell = document.createElement('div');
+      const idx = r * SIZE + c;
       const val = myShotsGrid[r][c];
       cell.className = 'cell';
       if (val === 'miss') cell.classList.add('miss');
       else if (val === 'hit') cell.classList.add('hit');
       else if (val === 'sunk') cell.classList.add('sunk');
       else if (isMyTurn && g?.status === 'playing') cell.classList.add('clickable');
+
+      if (val !== 0) {
+        const rank = ranks.get(idx) ?? RECENCY_STEPS;
+        cell.style.setProperty('--age', Math.min(rank / RECENCY_STEPS, 1).toFixed(2));
+      }
+      if (idx === lastIdx && val !== 0) {
+        cell.classList.add('last-shot');
+        if (isNewShot) cell.classList.add(val === 'miss' ? 'anim-miss' : val === 'sunk' ? 'anim-sunk' : 'anim-hit');
+      }
 
       if (pending && pending.by === uid && pending.row === r && pending.col === c) {
         cell.classList.add('pending');
@@ -782,13 +871,21 @@ function renderAttackBoard() {
       board.appendChild(cell);
     }
   }
+
+  // Reveal a simplified wreck silhouette for every enemy ship confirmed sunk.
+  renderShipHulls(board, findSunkGroups(myShotsGrid).map(cells => ({ cells, sunk: true })), 'wreck');
+
+  if (isNewShot) myLastAnimatedIdx = lastIdx;
 }
 
 function renderDefenseBoard() {
   const board = $('#defenseBoard');
   board.innerHTML = '';
   buildCoordHeader(board);
-  const myGrid = myFleetState?.grid ?? emptyGrid();
+  const ranks = recencyRanks(incomingOrder);
+  const lastIdx = incomingOrder.length ? incomingOrder[incomingOrder.length - 1] : null;
+  const isNewShot = lastIdx !== null && lastIdx !== oppLastAnimatedIdx;
+
   for (let r = 0; r < SIZE; r++) {
     const rowLabel = document.createElement('div');
     rowLabel.className = 'cell coord';
@@ -796,16 +893,30 @@ function renderDefenseBoard() {
     board.appendChild(rowLabel);
     for (let c = 0; c < SIZE; c++) {
       const cell = document.createElement('div');
+      const idx = r * SIZE + c;
       cell.className = 'cell';
       const shotVal = incomingGrid[r]?.[c];
-      const hasShip = myGrid[r][c] !== 0;
       if (shotVal === 'hit') cell.classList.add('hit');
       else if (shotVal === 'sunk') cell.classList.add('sunk');
       else if (shotVal === 'miss') cell.classList.add('miss');
-      else if (hasShip) cell.classList.add('ship');
+
+      if (shotVal && shotVal !== 0) {
+        const rank = ranks.get(idx) ?? RECENCY_STEPS;
+        cell.style.setProperty('--age', Math.min(rank / RECENCY_STEPS, 1).toFixed(2));
+      }
+      if (idx === lastIdx && shotVal) {
+        cell.classList.add('last-shot');
+        if (isNewShot) cell.classList.add(shotVal === 'miss' ? 'anim-miss' : shotVal === 'sunk' ? 'anim-sunk' : 'anim-hit');
+      }
       board.appendChild(cell);
     }
   }
+
+  // Own fleet: afloat ships in steel gray, sunk ones dimmed to a wreck tone.
+  const ships = (myFleetState?.ships ?? []).map(s => ({ cells: s.cells, sunk: s.hits >= s.size }));
+  renderShipHulls(board, ships, 'sunk-own');
+
+  if (isNewShot) oppLastAnimatedIdx = lastIdx;
 }
 
 // ---------- Fire a shot (I'm the attacker) ----------
@@ -861,18 +972,25 @@ async function resolveIncomingShot(gameId, myRoleForGame, g) {
     const attackerShotsSnap = await getDoc(attackerShotsRef);
     const attackerFlat = attackerShotsSnap.data()?.grid;
     const attackerGrid = attackerFlat ? flatToGrid(attackerFlat) : emptyGrid();
+    const attackerOrder = attackerShotsSnap.data()?.order ?? [];
 
     if (result === 'sunk') {
-      // reveal the whole sunk ship on the attacker's grid
+      // reveal the whole sunk ship on the attacker's grid; keep the exact
+      // cell that was just fired at as the *last* (most recent) order entry
       const ship = updatedShips.find(s => s.id === shipId);
-      ship.cells.forEach(({ r: rr, c: cc }) => { attackerGrid[rr][cc] = 'sunk'; });
+      ship.cells.forEach(({ r: rr, c: cc }) => {
+        attackerGrid[rr][cc] = 'sunk';
+        if (!(rr === row && cc === col)) attackerOrder.push(rr * SIZE + cc);
+      });
+      attackerOrder.push(row * SIZE + col);
     } else {
       attackerGrid[row][col] = result;
+      attackerOrder.push(row * SIZE + col);
     }
 
     const batch = writeBatch(db);
     batch.update(myBoardRef, { ships: updatedShips });
-    batch.set(attackerShotsRef, { grid: gridToFlat(attackerGrid) }, { merge: true });
+    batch.set(attackerShotsRef, { grid: gridToFlat(attackerGrid), order: attackerOrder }, { merge: true });
 
     const gameRef = doc(db, 'games', gameId);
     if (allSunk) {

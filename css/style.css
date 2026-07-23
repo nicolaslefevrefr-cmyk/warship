@@ -375,25 +375,37 @@ input[type="text"]::placeholder { color: var(--steel-400); }
 .cell.preview-ok { background: rgba(74,242,161,0.35); border-color: var(--sonar-green); }
 .cell.preview-bad { background: rgba(255,107,74,0.35); border-color: var(--alert-red); }
 
+/* Recency gradient: --age goes from 0 (just fired) to 1 (old shot).
+   Freshest shots read brighter/whiter; they fade toward the normal
+   miss/hit/sunk tone as more recent shots are fired elsewhere. */
+.cell.miss, .cell.hit, .cell.sunk { --age: 1; }
+
 .cell.miss::after {
   content: '';
   width: 8px; height: 8px; border-radius: 50%;
-  background: var(--steel-400);
+  background: hsl(205 25% calc(58% + (1 - var(--age)) * 32%));
+  box-shadow: 0 0 calc((1 - var(--age)) * 8px) hsla(205, 60%, 85%, calc((1 - var(--age)) * 0.8));
 }
-.cell.hit { background: rgba(255,107,74,0.3); }
+.cell.hit {
+  background: hsla(9, 88%, calc(48% + (1 - var(--age)) * 14%), calc(0.28 + (1 - var(--age)) * 0.22));
+}
 .cell.hit::after {
   content: '✕';
-  color: var(--alert-red);
+  color: hsl(9 90% calc(58% + (1 - var(--age)) * 30%));
   font-weight: 700;
   font-size: 0.9rem;
+  text-shadow: 0 0 calc((1 - var(--age)) * 6px) hsla(9, 90%, 80%, calc((1 - var(--age)) * 0.9));
 }
-.cell.sunk { background: rgba(255,107,74,0.55); }
+.cell.sunk {
+  background: hsla(9, 80%, calc(30% + (1 - var(--age)) * 12%), calc(0.55 + (1 - var(--age)) * 0.2));
+}
 .cell.sunk::after {
   content: '✕';
-  color: var(--foam-100);
+  color: hsl(0 0% calc(78% + (1 - var(--age)) * 20%));
   font-weight: 700;
   font-size: 0.9rem;
 }
+
 .cell.pending {
   animation: ping 0.9s ease-in-out infinite;
 }
@@ -402,9 +414,84 @@ input[type="text"]::placeholder { color: var(--steel-400); }
   50% { box-shadow: 0 0 0 6px rgba(74,242,161,0); }
 }
 
+/* Most recent shot on a board — always highlighted regardless of age,
+   so you can spot at a glance where the last exchange happened. */
+.cell.last-shot { animation: lastShotBlink 1.5s ease-in-out infinite; }
+@keyframes lastShotBlink {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,255,255,0.55), inset 0 0 0 1px rgba(255,255,255,0.4); }
+  50% { box-shadow: 0 0 0 5px rgba(255,255,255,0), inset 0 0 0 1px rgba(255,255,255,0.15); }
+}
+
+/* One-shot impact animations, played once when a shot is freshly resolved. */
+.cell.anim-miss::after { animation: splashPop 0.55s ease-out; }
+.cell.anim-hit { animation: hitFlash 0.5s ease-out; }
+.cell.anim-hit::after { animation: explodePop 0.5s ease-out; }
+.cell.anim-sunk { animation: hitFlash 0.5s ease-out, sinkSettle 0.7s ease-in 0.4s; }
+.cell.anim-sunk::after { animation: explodePop 0.5s ease-out; }
+
+@keyframes splashPop {
+  0% { transform: scale(0.2); opacity: 0.2; }
+  55% { transform: scale(1.6); opacity: 0.9; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes hitFlash {
+  0% { filter: brightness(2.6); }
+  100% { filter: brightness(1); }
+}
+@keyframes explodePop {
+  0% { transform: scale(0.2) rotate(-8deg); opacity: 0; }
+  50% { transform: scale(1.35) rotate(6deg); opacity: 1; }
+  75% { transform: scale(0.92) rotate(-2deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+@keyframes sinkSettle {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cell.last-shot, .cell.anim-miss::after, .cell.anim-hit, .cell.anim-hit::after,
+  .cell.anim-sunk, .cell.anim-sunk::after { animation: none !important; }
+}
+
 /* ===========================================================
-   PLACEMENT SCREEN
+   SHIP HULLS — simplified silhouettes overlaid on the grid
    =========================================================== */
+.ship-hull {
+  position: relative;
+  pointer-events: none;
+  align-self: center;
+  justify-self: center;
+  width: 92%;
+  height: 92%;
+  background: linear-gradient(180deg, var(--steel-200), var(--steel-400) 55%, var(--navy-600));
+  box-shadow: 0 1px 3px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.35);
+  clip-path: polygon(6% 20%, 94% 20%, 100% 50%, 94% 80%, 6% 80%, 0% 50%);
+}
+.ship-hull.vertical {
+  background: linear-gradient(90deg, var(--steel-200), var(--steel-400) 55%, var(--navy-600));
+  clip-path: polygon(20% 6%, 80% 6%, 100% 50%, 80% 94%, 20% 94%, 0% 50%);
+}
+.ship-hull::after {
+  /* deck stripe */
+  content: '';
+  position: absolute;
+  background: rgba(255,255,255,0.35);
+}
+.ship-hull.horizontal::after { top: 46%; left: 10%; right: 10%; height: 2px; }
+.ship-hull.vertical::after { left: 46%; top: 10%; bottom: 10%; width: 2px; }
+
+.ship-hull.sunk-own {
+  background: linear-gradient(180deg, var(--navy-700), var(--navy-800));
+  filter: saturate(0.4);
+}
+.ship-hull.sunk-own::after { background: rgba(255,107,74,0.5); }
+
+.ship-hull.wreck {
+  background: linear-gradient(180deg, hsl(9 40% 32%), hsl(9 55% 18%));
+  box-shadow: 0 1px 3px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,180,150,0.2);
+}
+.ship-hull.wreck::after { background: rgba(0,0,0,0.35); }
 .placement-layout {
   display: grid;
   grid-template-columns: 1fr 300px;

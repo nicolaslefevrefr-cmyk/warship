@@ -1,7 +1,7 @@
 {
-  "name": "Bataille Navale — Console de tir",
-  "short_name": "Bataille Navale",
-  "description": "Bataille navale multijoueur en temps réel, propulsée par Firebase.",
+  "name": "Battleship — Fire Control",
+  "short_name": "Battleship",
+  "description": "Real-time multiplayer Battleship, powered by Firebase.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

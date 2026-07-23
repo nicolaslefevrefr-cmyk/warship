@@ -1,13 +1,12 @@
-// Service worker — met en cache la coquille de l'application (app shell)
-// pour un fonctionnement hors-ligne du menu.
-// Le contenu dynamique (parties, tirs) passe toujours par Firebase, jamais par ce cache.
+// Service worker — caches the application shell for offline use.
+// Dynamic content (games, shots) always goes through Firebase, never through this cache.
 //
-// Stratégie "réseau d'abord" : on essaie toujours de récupérer la dernière version
-// en ligne ; le cache ne sert que de secours si le réseau est indisponible.
-// (Une stratégie "cache d'abord" empêcherait les mises à jour de code de s'appliquer
-// tant que le cache n'est pas explicitement vidé — ce qu'on veut éviter ici.)
+// "Network-first" strategy: always try to fetch the latest version online;
+// the cache is only a fallback if the network is unavailable.
+// (A "cache-first" strategy would prevent code updates from applying until
+// the cache is explicitly cleared — which we want to avoid here.)
 
-const CACHE_NAME = 'bataille-navale-v2';
+const CACHE_NAME = 'battleship-v4';
 const APP_SHELL = [
   './',
   './index.html',
@@ -38,8 +37,8 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
 
-  // Ne jamais intercepter les appels réseau vers Firebase / Google APIs :
-  // ils doivent toujours atteindre le réseau pour le temps réel.
+  // Never intercept network calls to Firebase / Google APIs:
+  // they must always reach the network for real-time sync.
   if (req.method !== 'GET' || !req.url.startsWith(self.location.origin)) {
     return;
   }
